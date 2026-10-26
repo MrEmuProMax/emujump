@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 雙門檻跳躍計數器 (MQTTGO 連線修正版)</title>
+    <!-- MediaPipe Pose -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <!-- MQTT.js -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body {
+            background-color: #181818;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 15px;
+            min-height: 100vh;
+        }
+
+        h1 { margin-bottom: 12px; font-size: 22px; }
+
+        .room-bar {
+            background: #282828;
+            padding: 12px 20px;
+            border-radius: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 15px;
+            max-width: 720px;
+            width: 100%;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        }
+        .room-bar input, .room-bar select {
+            padding: 7px 10px;
+            border-radius: 6px;
+            border: 1px solid #444;
+            background: #333;
+            color: #fff;
+            font-size: 13px;
+        }
+        .btn-connect {
+            background: #007bff;
+            color: white;
+            padding: 7px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .btn-connect:hover { background: #0056b3; }
+        .mqtt-status {
+            font-size: 13px;
+            color: #e74c3c;
+            display: flex;
+            align-items: center;
+            width: 100%;
+            justify-content: center;
+            margin-top: 5px;
+        }
+        .mqtt-status.online { color: #00ff88; }
+
+        .dashboard {
+            background: #222;
+            padding: 15px 30px;
+            border-radius: 12px;
+            text-align: center;
+            margin-bottom: 15px;
+            width: 100%;
+            max-width: 640px;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+            border: 1px solid #333;
+        }
+        .count-num {
+            font-size: 64px;
+            font-weight: 800;
+            color: #00ff88;
+            line-height: 1;
+            margin: 10px 0;
+        }
+        .status-indicators {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 10px;
+        }
+        .indicator {
+            padding: 6px 14px;
+            border-radius: 20px;
+            background: #333;
+            color: #777;
+            font-size: 14px;
+            font-weight: bold;
+            transition: 0.15s;
+        }
+        .indicator.active-head { background: #ff4757; color: white; transform: scale(1.05); }
+        .indicator.active-feet { background: #1e90ff; color: white; transform: scale(1.05); }
+
+        .canvas-container {
+            position: relative;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 6px 25px rgba(0,0,0,0.6);
+            background: #000;
+        }
+        canvas { display: block; }
+
+        .controls {
+            margin-top: 15px;
+            background: #282828;
+            padding: 15px 20px;
+            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: 100%;
+            max-width: 640px;
+        }
+        .slider-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 14px;
+        }
+        .slider-row input[type="range"] {
+            width: 65%;
+            cursor: pointer;
+        }
+        .btn-reset {
+            padding: 7px 15px;
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            align-self: flex-end;
+        }
+
+        .spectator-view {
+            width: 640px;
+            height: 300px;
+            background: #222;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            color: #aaa;
+            gap: 15px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>AI 雙門檻跳躍計數器</h1>
+
+    <!-- 房間與伺服器設定 -->
+    <div class="room-bar">
+        <label>伺服器：</label>
+        <select id="serverSelect">
+            <option value="mqttgo-ws">MQTTGO (Port 8000, 適合本機檔案)</option>
+            <option value="mqttgo-wss">MQTTGO (Port 8084 WSS)</option>
+            <option value="emqx">EMQX 公共備用 (WSS)</option>
+        </select>
+
+        <label>身份：</label>
+        <select id="roleSelect">
+            <option value="jumper">跳躍者 (運動端)</option>
+            <option value="viewer">監控者 (觀看端)</option>
+        </select>
+        
+        <label>房間：</label>
+        <input type="text" id="roomId" value="jump_room_888" style="width: 110px;">
+        
+        <button class="btn-connect" id="connectBtn">進入房間連線</button>
+        <div class="mqtt-status" id="mqttStatus">● 尚未連線</div>
+    </div>
+
+    <!-- 即時儀表板 -->
+    <div class="dashboard">
+        <div style="font-size: 14px; color: #aaa;">同步累積跳躍次數</div>
+        <div class="count-num" id="countDisplay">0</div>
+        <div class="status-indicators">
+            <span class="indicator" id="headStatus">🔴 頭部：未過紅線</span>
+            <span class="indicator" id="feetStatus">🔵 雙腳：未離地過藍線</span>
+        </div>
+    </div>
+
+    <!-- 運動者鏡頭視窗 -->
+    <div class="canvas-container" id="cameraBox">
+        <canvas id="stageCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <!-- 監控者等待畫面 -->
+    <div class="spectator-view" id="spectatorBox" style="display: none;">
+        <div style="font-size: 40px;">📡</div>
+        <div>已處於【遠端監控模式】</div>
+        <div style="font-size: 13px; color: #777;">正透過 MQTT 同步跳躍者的動作數據</div>
+    </div>
+
+    <!-- 門檻調整滑桿 -->
+    <div class="controls" id="controlsPanel">
+        <div class="slider-row">
+            <label style="color: #ff6b81;">🔴 紅線高度 (頭頂門檻)：</label>
+            <input type="range" id="redSlider" min="20" max="300" value="130">
+        </div>
+        <div class="slider-row">
+            <label style="color: #70a1ff;">🔵 藍線高度 (雙腳離地門檻)：</label>
+            <input type="range" id="blueSlider" min="250" max="470" value="410">
+        </div>
+        <button class="btn-reset" id="resetBtn">計數歸零 (同步)</button>
+    </div>
+
+    <video id="webcam" playsinline style="display:none;"></video>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvas = document.getElementById('stageCanvas');
+        const ctx = canvas.getContext('2d');
+        const countDisplay = document.getElementById('countDisplay');
+        const headStatus = document.getElementById('headStatus');
+        const feetStatus = document.getElementById('feetStatus');
+        const mqttStatus = document.getElementById('mqttStatus');
+        const roleSelect = document.getElementById('roleSelect');
+        const serverSelect = document.getElementById('serverSelect');
+        const roomIdInput = document.getElementById('roomId');
+        const connectBtn = document.getElementById('connectBtn');
+        const cameraBox = document.getElementById('cameraBox');
+        const spectatorBox = document.getElementById('spectatorBox');
+        const controlsPanel = document.getElementById('controlsPanel');
+        const redSlider = document.getElementById('redSlider');
+        const blueSlider = document.getElementById('blueSlider');
+        const resetBtn = document.getElementById('resetBtn');
+
+        let count = 0;
+        let redLineY = 130;
+        let blueLineY = 410;
+        let isJumpTriggered = false;
+
+        let mqttClient = null;
+        let currentTopic = '';
+        let myRole = 'jumper';
+        let lastPublishedState = { head: false, feet: false, count: 0 };
+
+        // 提示音
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playBeep() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.frequency.setValueAtTime(659.25, audioCtx.currentTime);
+            gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.15);
+        }
+
+        function updateUI(headAbove, feetAbove, newCount) {
+            if (headAbove) {
+                headStatus.classList.add('active-head');
+                headStatus.innerText = '🔴 頭部：已過紅線！';
+            } else {
+                headStatus.classList.remove('active-head');
+                headStatus.innerText = '⚪ 頭部：未過紅線';
+            }
+
+            if (feetAbove) {
+                feetStatus.classList.add('active-feet');
+                feetStatus.innerText = '🔵 雙腳：已過藍線！';
+            } else {
+                feetStatus.classList.remove('active-feet');
+                feetStatus.innerText = '⚪ 雙腳：未完全離地';
+            }
+
+            if (newCount !== count) {
+                count = newCount;
+                countDisplay.innerText = count;
+                playBeep();
+            }
+        }
+
+        function publishJumpState(headAbove, feetAbove, currentCount) {
+            if (!mqttClient || !mqttClient.connected || myRole !== 'jumper') return;
+
+            if (
+                lastPublishedState.head !== headAbove ||
+                lastPublishedState.feet !== feetAbove ||
+                lastPublishedState.count !== currentCount
+            ) {
+                const payload = JSON.stringify({ head: headAbove, feet: feetAbove, count: currentCount });
+                mqttClient.publish(currentTopic, payload, { qos: 0 });
+                lastPublishedState = { head: headAbove, feet: feetAbove, count: currentCount };
+            }
+        }
+
+        // 取得所選 Broker 的 URL
+        function getBrokerUrl(type) {
+            switch (type) {
+                case 'mqttgo-ws':
+                    return 'ws://mqttgo.io:8000/mqtt'; // 本機檔案環境最相容
+                case 'mqttgo-wss':
+                    return 'wss://broker.mqttgo.io:8084/mqtt';
+                case 'emqx':
+                    return 'wss://broker.emqx.io:8084/mqtt';
+                default:
+                    return 'ws://mqttgo.io:8000/mqtt';
+            }
+        }
+
+        connectBtn.addEventListener('click', () => {
+            myRole = roleSelect.value;
+            const roomId = roomIdInput.value.trim() || 'default_room';
+            currentTopic = `jump_tracker/${roomId}/state`;
+
+            if (mqttClient) mqttClient.end();
+
+            const brokerUrl = getBrokerUrl(serverSelect.value);
+            mqttStatus.innerText = `● 正在連線至 ${brokerUrl}...`;
+            mqttStatus.className = 'mqtt-status';
+
+            mqttClient = mqtt.connect(brokerUrl, {
+                clientId: 'jump_' + Math.random().toString(16).substr(2, 8),
+                clean: true,
+                connectTimeout: 5000
+            });
+
+            mqttClient.on('connect', () => {
+                mqttStatus.innerText = `● 連線成功！已加入房間 [${roomId}]`;
+                mqttStatus.className = 'mqtt-status online';
+                mqttClient.subscribe(currentTopic);
+
+                if (myRole === 'viewer') {
+                    cameraBox.style.display = 'none';
+                    controlsPanel.style.display = 'none';
+                    spectatorBox.style.display = 'flex';
+                } else {
+                    cameraBox.style.display = 'block';
+                    controlsPanel.style.display = 'flex';
+                    spectatorBox.style.display = 'none';
+                    initCameraAndAI();
+                }
+            });
+
+            mqttClient.on('error', (err) => {
+                mqttStatus.innerText = `● 連線失敗：${err.message || '無法建立 WebSocket'}`;
+                mqttStatus.className = 'mqtt-status';
+                console.error(err);
+            });
+
+            mqttClient.on('close', () => {
+                if (mqttStatus.className.includes('online')) {
+                    mqttStatus.innerText = '● 連線已中斷，嘗試重新連線中...';
+                    mqttStatus.className = 'mqtt-status';
+                }
+            });
+
+            mqttClient.on('message', (topic, message) => {
+                if (topic === currentTopic && myRole === 'viewer') {
+                    try {
+                        const data = JSON.parse(message.toString());
+                        updateUI(data.head, data.feet, data.count);
+                    } catch (e) {
+                        console.error('資料解析錯誤', e);
+                    }
+                }
+            });
+        });
+
+        resetBtn.addEventListener('click', () => {
+            count = 0;
+            isJumpTriggered = false;
+            countDisplay.innerText = 0;
+            publishJumpState(false, false, 0);
+        });
+
+        redSlider.addEventListener('input', (e) => redLineY = parseInt(e.target.value));
+        blueSlider.addEventListener('input', (e) => blueLineY = parseInt(e.target.value));
+
+        let isCameraStarted = false;
+        function initCameraAndAI() {
+            if (isCameraStarted) return;
+            isCameraStarted = true;
+
+            const pose = new Pose({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+            });
+
+            pose.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            pose.onResults(onPoseResults);
+
+            const camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await pose.send({ image: videoElement });
+                },
+                width: 640,
+                height: 480
+            });
+
+            camera.start().catch(err => {
+                alert("攝影機無法啟動！若用檔案開啟，瀏覽器可能會阻擋攝影機，建議透過本機伺服器開啟。錯誤：" + err.message);
+            });
+        }
+
+        function onPoseResults(results) {
+            ctx.save();
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            let headAbove = false;
+            let feetAbove = false;
+
+            if (results.poseLandmarks) {
+                const landmarks = results.poseLandmarks;
+                const nose = landmarks[0];
+                const leftAnkle = landmarks[27];
+                const rightAnkle = landmarks[28];
+
+                const headX = (1 - nose.x) * canvas.width;
+                const headY = nose.y * canvas.height;
+                const leftAnkleX = (1 - leftAnkle.x) * canvas.width;
+                const leftAnkleY = leftAnkle.y * canvas.height;
+                const rightAnkleX = (1 - rightAnkle.x) * canvas.width;
+                const rightAnkleY = rightAnkle.y * canvas.height;
+
+                // 頭部綠點
+                ctx.beginPath();
+                ctx.arc(headX, headY, 12, 0, 2 * Math.PI);
+                ctx.fillStyle = '#00ff88';
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                // 腳踝藍點
+                const feetDetected = (leftAnkle.visibility > 0.5 && rightAnkle.visibility > 0.5);
+                if (feetDetected) {
+                    [{x: leftAnkleX, y: leftAnkleY}, {x: rightAnkleX, y: rightAnkleY}].forEach(pt => {
+                        ctx.beginPath();
+                        ctx.arc(pt.x, pt.y, 8, 0, 2 * Math.PI);
+                        ctx.fillStyle = '#00d2d3';
+                        ctx.fill();
+                        ctx.strokeStyle = '#fff';
+                        ctx.stroke();
+                    });
+                }
+
+                headAbove = headY < redLineY;
+                feetAbove = feetDetected && (leftAnkleY < blueLineY && rightAnkleY < blueLineY);
+
+                if (headAbove && feetAbove) {
+                    isJumpTriggered = true;
+                }
+
+                if (isJumpTriggered && (headY > redLineY + 15 || leftAnkleY > blueLineY || rightAnkleY > blueLineY)) {
+                    count++;
+                    countDisplay.innerText = count;
+                    playBeep();
+                    isJumpTriggered = false;
+                }
+
+                updateUI(headAbove, feetAbove, count);
+                publishJumpState(headAbove, feetAbove, count);
+            }
+
+            // 紅線
+            ctx.strokeStyle = '#ff4757';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([6, 6]);
+            ctx.beginPath();
+            ctx.moveTo(0, redLineY); ctx.lineTo(canvas.width, redLineY); ctx.stroke();
+
+            // 藍線
+            ctx.strokeStyle = '#1e90ff';
+            ctx.beginPath();
+            ctx.moveTo(0, blueLineY); ctx.lineTo(canvas.width, blueLineY); ctx.stroke();
+            ctx.setLineDash([]);
+        }
+    </script>
+</body>
+</html>
