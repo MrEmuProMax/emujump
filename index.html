@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 雙門檻跳躍計數器 (MQTTGO 連線修正版)</title>
+    <title>AI 雙門檻跳躍計數器 (高穩定 MQTT 版)</title>
     <!-- MediaPipe Pose -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
@@ -64,6 +64,7 @@
             width: 100%;
             justify-content: center;
             margin-top: 5px;
+            word-break: break-all;
         }
         .mqtt-status.online { color: #00ff88; }
 
@@ -167,9 +168,9 @@
     <div class="room-bar">
         <label>伺服器：</label>
         <select id="serverSelect">
-            <option value="mqttgo-ws">MQTTGO (Port 8000, 適合本機檔案)</option>
-            <option value="mqttgo-wss">MQTTGO (Port 8084 WSS)</option>
-            <option value="emqx">EMQX 公共備用 (WSS)</option>
+            <option value="emqx" selected>EMQX 雲端公開 (最推薦・穩定)</option>
+            <option value="hivemq">HiveMQ 雲端公開 (WSS 8884)</option>
+            <option value="mqttgo-ws">MQTTGO (Port 8000, 僅限本地 http/file)</option>
         </select>
 
         <label>身份：</label>
@@ -304,17 +305,16 @@
             }
         }
 
-        // 取得所選 Broker 的 URL
         function getBrokerUrl(type) {
             switch (type) {
-                case 'mqttgo-ws':
-                    return 'ws://mqttgo.io:8000/mqtt'; // 本機檔案環境最相容
-                case 'mqttgo-wss':
-                    return 'wss://broker.mqttgo.io:8084/mqtt';
                 case 'emqx':
                     return 'wss://broker.emqx.io:8084/mqtt';
-                default:
+                case 'hivemq':
+                    return 'wss://broker.hivemq.com:8884/mqtt';
+                case 'mqttgo-ws':
                     return 'ws://mqttgo.io:8000/mqtt';
+                default:
+                    return 'wss://broker.emqx.io:8084/mqtt';
             }
         }
 
@@ -323,7 +323,10 @@
             const roomId = roomIdInput.value.trim() || 'default_room';
             currentTopic = `jump_tracker/${roomId}/state`;
 
-            if (mqttClient) mqttClient.end();
+            if (mqttClient) {
+                mqttClient.end(true);
+                mqttClient = null;
+            }
 
             const brokerUrl = getBrokerUrl(serverSelect.value);
             mqttStatus.innerText = `● 正在連線至 ${brokerUrl}...`;
@@ -332,7 +335,7 @@
             mqttClient = mqtt.connect(brokerUrl, {
                 clientId: 'jump_' + Math.random().toString(16).substr(2, 8),
                 clean: true,
-                connectTimeout: 5000
+                connectTimeout: 8000
             });
 
             mqttClient.on('connect', () => {
@@ -353,9 +356,9 @@
             });
 
             mqttClient.on('error', (err) => {
-                mqttStatus.innerText = `● 連線失敗：${err.message || '無法建立 WebSocket'}`;
+                mqttStatus.innerText = `● 連線失敗 (${err.message || '無法連線至 WebSocket Broker'})`;
                 mqttStatus.className = 'mqtt-status';
-                console.error(err);
+                console.error('MQTT Error:', err);
             });
 
             mqttClient.on('close', () => {
@@ -414,7 +417,7 @@
             });
 
             camera.start().catch(err => {
-                alert("攝影機無法啟動！若用檔案開啟，瀏覽器可能會阻擋攝影機，建議透過本機伺服器開啟。錯誤：" + err.message);
+                alert("攝影機無法啟動！請確認瀏覽器已給予攝影機權限。錯誤：" + err.message);
             });
         }
 
